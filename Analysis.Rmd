@@ -1,0 +1,432 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+### Loading packages
+```{r}
+## For data wragnling & file management
+library(tidyverse) 
+library(stringr)
+library(data.table)
+
+
+## For analysis
+library(rstatix)
+library(spatstat)
+library(vegan)
+
+## For pretty plots
+library(ggplot2)
+library(ggpubr)
+library(reshape2)
+library(multcompView)
+library(RColorBrewer)
+
+
+
+set1_filePaths <- list.files(path = "Data/Set1 - Results/Phase 2", pattern = ".csv", full.names = TRUE)
+
+
+
+```
+
+
+
+## universal functions
+
+```{r}
+
+# Params finder: to stop the repeat reading in of files which takes ages
+parse_filename <- function(file_name) {
+  
+  cndd <- str_extract(file_name, "cndd\\d+\\.?\\d*") %>%
+    str_replace("cndd", "")
+  
+  hndd <- str_extract(file_name, "hndd\\d+\\.?\\d*") %>%
+    str_replace("hndd", "")
+  
+  fragment_size <- str_extract(file_name, "s\\d+\\.?\\d*")
+  
+  fragment_no <- str_extract(file_name, "nf\\d+\\.?\\d*")
+
+  immigration <- str_extract(file_name, "m\\d+\\.?\\d*")
+  
+  nf<- str_extract(file_name, "(?<=_nf)\\d+")
+  
+  L <- str_extract(file_name, "(?<=_s)\\d+")
+  
+  
+  list(cndd = cndd, hndd = hndd, fragment_size = fragment_size, fragment_no = fragment_no, immigration = immigration, L = L, nf = nf )
+}
+
+
+
+```
+
+
+
+# Set-1 Analysis
+
+## Species diversity and distribution
+
+### Shannons H
+
+```{r}
+
+findH <- function(file_name) {
+  params <- parse_filename(file_name)
+  cndd_value <- params$cndd
+  hndd_value <- params$hndd
+  
+  df <- fread(file_name) ## >> read.csv
+  
+  shannon_results <- df %>%
+    group_by(Repeat, TimeStep, Species) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    pivot_wider(names_from = Species, values_from = n, values_fill = 0) ## very fast << always use over spread
+  
+  species_counts <- shannon_results %>% select(-Repeat, -TimeStep)
+  
+  shannon_results$H <- apply(species_counts, 1, shannonEntropy)
+  avgH <- mean(shannon_results$H)
+  
+  tibble(hndd = hndd_value,
+         cndd = cndd_value,
+         avg_shannon_H = avgH)
+}
+
+shannon_raw_results <- lapply(set1_filePaths, findH)
+shannon_summary <- bind_rows(shannon_raw_results)
+
+shannon_summary$hndd <- factor(shannon_summary$hndd, levels = c("0", "0.5", "3"))
+shannon_summary$cndd <- factor(shannon_summary$cndd, levels = c("0", "0.5", "3", "6", "9", "12"))
+
+## Use this to store the results when needed
+fwrite(shannon_summary, file = "Data/ShannonH_SET1.csv", row.names = FALSE)
+
+```
+
+
+
+### Species Abundances and Species Abundance Distributions
+
+```{r}
+
+calculate_sad <- function(file_path) {
+
+  params <- parse_filename(file_path)
+  cndd_value <- params$cndd
+  hndd_value <- params$hndd
+
+  data <- fread(file_path)
+  
+  ## Abundance calculations 
+  species_abundance <- data %>% 
+    group_by(Repeat, TimeStep, Species) %>% 
+    summarise(abundance = n(), .groups = 'drop') %>% 
+    arrange(Repeat, TimeStep, desc(abundance)) %>% 
+    group_by(Repeat, TimeStep) %>% 
+    mutate(rank = row_number()) %>% 
+    ungroup()
+  
+  # mean abundance for each rank
+  mean_sad <- species_abundance %>% 
+    group_by(Repeat, TimeStep, rank) %>% 
+    summarise(total_abundance = sum(abundance), .groups = 'drop') %>% 
+    group_by(rank) %>% 
+    summarise(mean_abundance = mean(total_abundance), .groups = 'drop')
+  
+  tibble(hndd = hndd_value, 
+         cndd = cndd_value,
+         rank = mean_sad$rank, 
+         mean_abundance = mean_sad$mean_abundance)
+}
+
+sad_results <- lapply(set1_filePaths, calculate_sad)
+sad_table <- bind_rows(sad_results)
+
+sad_table$hndd <- factor(sad_table$hndd, levels = c("0", "0.5", "3"))
+sad_table$cndd <- factor(sad_table$cndd, levels = c("0", "0.5", "3", "6", "9", "12"))
+
+## you know what to do
+fwrite(sad_table, file = "Data/SAD_SET1.csv", row.names = FALSE)
+```
+
+
+#### Plotting (Basic)
+
+```{r}
+sad_set1 <-  read_csv("Data/SAD_SET1.csv")
+ShannonH_set1 <- read_csv("Data/ShannonH_SET1.csv")
+
+sad_h_combined_set1 <- merge(sad_set1, ShannonH_set1, by = c("hndd", "cndd"))
+
+
+sad_h_combined_set1$hndd <- factor(sad_h_combined_set1$hndd, levels = c("0", "0.5", "3"))
+sad_h_combined_set1$cndd <- factor(sad_h_combined_set1$cndd, levels = c("12", "9", "6", "3", "0.5", "0"))
+
+ggplot(sad_h_combined_set1)+
+  geom_rect(aes(xmin = -Inf, xmax = Inf, 
+                ymin = -Inf,ymax = Inf,
+                fill = avg_shannon_H),
+                alpha = 0.5, inherit.aes = FALSE)+
+  geom_col(aes(x = rank, y = mean_abundance), colour = "red", width = 1) + 
+  facet_grid(cndd ~ hndd)+ 
+  #geom_blank(aes(x = rank, y = mean_abundance))+
+  scale_fill_gradient(high = "#326b77", low = "#b5d1ae")+
+  #scale_x_discrete(position = "top")+
+  labs(x = "Strength of HNDD", y = "Stength of CNDD", fill = "", title = "Mean Shannon's Diversity Index (H)")+
+  theme_pubr(legend = "right")+
+  theme(
+    text = element_text(family="serif"),
+   # strip.background = element_blank(),
+    strip.text = element_text(size = 15),
+    axis.title.x = element_text(size = 15, vjust = 1),
+    axis.title.y = element_text(size = 15),
+    panel.spacing = unit(0, "lines"),
+    panel.background = element_rect(fill = "grey", colour = NA),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    panel.grid.major =  element_blank(),
+    panel.grid.minor =  element_blank(),
+    axis.ticks = element_blank(),
+    #panel.grid = element_line(linewidth = 1)
+    axis.line.x = element_line(colour = "black"),
+    panel.border = element_blank(),
+    legend.key.height =  unit(3.5, "lines"),
+    legend.title.position = "right",
+    legend.direction = "vertical",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+
+
+## Spatial Statistics
+
+
+### Clark Evans statistics
+
+Crude measure of clustering vs ordering of a data set by comparing the average distances to the nearest neighbor vs the average distance to a random point (or nearest neighbor in a poisson distribution)
+
+
+```{r}
+
+## Warning very intensive function 
+
+calculate_clark_evans <- function(file_path){
+  
+  params <- parse_filename(file_path)
+  cndd_value <- params$cndd
+  hndd_value <- params$hndd
+  L <- params$L
+  
+  if(is.na(L)){
+    L <- 1024 ## the default size for any unlabeled files 
+  }
+  
+  
+  data <- read_csv(file_path) ## Just making extra sure that I have a tidy data frame
+  
+  sizeWindow <- owin(c(0, L), c(0, L))
+  
+  clark_evans_results <- data %>% 
+    group_by(Repeat, TimeStep, Species) %>% 
+    do({ ## Do may be a little outdated but it gives a good progress bar and it makes sense in this case
+      
+      this_sp <- . 
+      
+      tpp <- ppp(x = this_sp$x, y = this_sp$y, window = sizeWindow) 
+      
+      CEval <-  clarkevans(tpp, correction = "Donnelly")
+      
+      tibble(CE = CEval, abundance= nrow(this_sp))
+      
+    }) %>% 
+    filter(!is.infinite(CE)) 
+  
+  if(!is.data.frame(clark_evans_results)){
+    stop("ERROR: outputting a non-data frame")
+  }
+
+  avg_ce <- mean(clark_evans_results$CE)
+
+  tibble(
+    hndd = factor(params$hndd),
+    cndd = factor(params$cndd),
+    mean_CE = avg_ce
+  )
+  
+}
+
+ce_results <- lapply(set1_filePaths, calculate_clark_evans)
+ce_results <- bind_rows(ce_results)
+
+
+ce_results$hndd <- factor(ce_results$hndd, levels = c("0", "0.5", "3"))
+ce_results$cndd <- factor(ce_results$cndd, levels = c("0", "0.5", "3", "6", "9", "12"))
+
+fwrite(ce_results, file ="Data/Clark_Evans_SET1.csv", row.names = FALSE)
+
+```
+
+
+
+
+#### Plotting
+```{r}
+CE_set1 <- read_csv("Data/Clark_Evans_SET1.csv")
+
+CE_set1$hndd <- factor(CE_set1$hndd, levels = c("0", "0.5", "3"))
+CE_set1$cndd <- factor(CE_set1$cndd, levels = c("0", "0.5", "3", "6", "9", "12"))
+
+ggplot(CE_set1)+
+  geom_tile(aes(x = hndd, y = cndd, fill = mean_CE)) + 
+  scale_fill_gradient(high = "#326b77", low = "#b5d1ae")+
+  labs(x = "Strength of HNDD", y = "Stength of CNDD", fill = "Mean Clark Evens Stat")+
+  theme_minimal()+
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10),
+    panel.spacing = unit(0, "lines"),
+    panel.background = element_rect(fill = "grey", colour = NA),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    panel.grid.major =  element_blank(),
+    panel.grid.minor =  element_blank()
+  )
+```
+
+
+### Pair correlation function / radial distibution function 
+
+A more detailed understanding of how density varies as a function of distance from any one point. Here I am using it to understand the density of conspecifics from each other, ie. how far do plants disperse from their parent and still survive. (all closer together under the null as you would expect).
+
+
+```{r}
+
+
+calculate_pcf <- function(file_path) {
+  
+  params <- parse_filename(file_path)
+  cndd_value <- params$cndd
+  hndd_value <- params$hndd
+  L <- params$L
+  
+   if(is.na(L)){
+    L <- 1024 ## the default size for any unlabeled files 
+  }
+ 
+  data <- fread(file_path)
+  
+  window <- owin(c(0, L), c(0, L))
+  
+  ## sampling a subset of timesteps as this function is very computationally intensive 
+  sampled_timesteps <- sample(x = unique(data$TimeStep), size = 20)
+  
+  
+  data <- data %>% 
+    filter(TimeStep %in% sampled_timesteps)
+  
+  # Filtering out species with < 20 individuals as they don't produce meaningful results (Can essentially be independent of each other)
+  valid_species <- data %>%
+    group_by(Repeat, TimeStep, Species) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    filter(count >= 20)
+  
+  filtered_data <- data %>%
+    semi_join(valid_species, by = c("Repeat", "TimeStep", "Species"))
+  
+  # Creating the radius and intervals for which to test the PCF function 
+  R_seq <- seq(0, 200, by = 10)
+  
+  ## Running the PCF!
+  pcf_results <- filtered_data %>%
+    group_by(Repeat, TimeStep, Species) %>%
+    group_modify(~ {
+      tpp <- ppp(.x$x, .x$y, window = window)
+      pcf_data <- pcf(tpp, correction = "Ripley", r = R_seq)
+      
+      tibble(
+        r = pcf_data$r,
+        iso = pcf_data$iso,
+        abundance = nrow(.x)
+      )
+    }) %>%
+    ungroup() %>%
+    filter(!is.infinite(iso), !is.nan(iso))
+  
+ 
+  tibble(
+    hndd = hndd_value,
+    cndd = cndd_value,
+    Repeat = as.factor(rep(filtered_data$Repeat[1], nrow(pcf_results))),
+    TimeStep = as.factor(rep(filtered_data$TimeStep[1], nrow(pcf_results))),
+    Species = rep(filtered_data$Species[1], nrow(pcf_results)),
+    r = pcf_results$r,
+    iso = pcf_results$iso,
+    abundance = pcf_results$abundance
+  )
+}
+
+pcf_results <- lapply(set1_filePaths, calculate_pcf)
+pcf_table <- bind_rows(pcf_results)
+
+pcf_table$hndd <- factor(pcf_table$hndd, levels = c("0", "0.5", "3"))
+pcf_table$cndd <- factor(pcf_table$cndd, levels = c("0", "0.5", "3", "6", "9", "12"))
+
+fwrite(pcf_table, file = "Data/PCF_SET1.csv", row.names = FALSE)
+
+```
+
+
+#### Plotting
+
+```{r}
+set1_pcf <- fread("Data/PCF_SET1.csv")
+
+
+set1_pcf_summarised <- set1_pcf %>%
+  filter(r <= 100, abundance > 50)
+
+set1_pcf_summarised <- set1_pcf %>%
+  group_by(hndd, cndd, r, Species) %>% 
+  summarise(
+    mean_iso = mean(iso),
+    lower_ic = quantile(iso, 0.95), ## variability is important here
+    upper_ic = quantile(iso, 0.05)
+  )
+
+ggplot() +
+  geom_line(data = set1_pcf_summarised, aes(x = r, y = mean_iso))+
+  geom_point(data = set1_pcf_summarised, aes(x = r, y = mean_iso))+
+  geom_ribbon(data = set1_pcf_summarised, aes(x = r, ymin = lower_ic, ymax = upper_ic), alpha = 0.3)+ 
+  facet_grid(~cndd~hndd)+
+  theme_minimal()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
