@@ -1,4 +1,4 @@
-# Example-Analysis from masters thesis
+# Example-Analysis
 
 ## Summary 
 My MRes project investigated how conspecific negative density dependence (CNDD)—where species-specific natural enemies reduce offspring survival near parent trees—affects tropical tree diversity in fragmented landscapes. Using an individual-based simulation in continuous space, I explored the effects of habitat fragmentation, immigration, and network topology on community-level diversity. Building on theoretical and empirical studies, the project tested whether CNDD can maintain biodiversity under realistic disturbance scenarios. Results highlight that CNDD’s stabilising effects are highly sensitive to fragment size and connectivity, 
